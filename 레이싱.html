@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Night Run - 자동차 레이싱 게임</title>
+<!--
+  Night Run — HTML5 Canvas 자동차 레이싱 게임
+  - 파일 1개(index.html)로 동작합니다. 브라우저에서 열기만 하면 실행됩니다.
+  - GitHub Pages: Settings > Pages > Branch: main / root 로 배포하세요.
+  조작: ← → (A D) 이동 · Space/Shift 부스터 · P 일시정지 · 모바일은 화면 버튼
+-->
+<style>
+  :root {
+    --bg: #0e1a22;
+    --road: #2a2e39;
+    --grass: #15363b;
+    --line: #f1e8cf;
+    --car: #ffd23f;
+    --ink: #f4f1e8;
+    --accent: #3fd0c9;
+    --danger: #ff4d6d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Trebuchet MS", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    overflow: hidden; touch-action: none; user-select: none;
+  }
+  body { display: flex; align-items: center; justify-content: center; }
+  #wrap { position: relative; height: 100%; max-height: 100vh; aspect-ratio: 400 / 640; max-width: 100vw; }
+  canvas { width: 100%; height: 100%; display: block; background: var(--grass); border-radius: 6px; }
+
+  #hud {
+    position: absolute; top: 10px; left: 12px; right: 12px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    font-weight: 700; font-size: clamp(14px, 3.4vh, 20px); pointer-events: none;
+    text-shadow: 0 2px 6px rgba(0,0,0,.6);
+  }
+  #hud small { display: block; font-weight: 400; opacity: .75; font-size: .7em; }
+  #nitro { position: absolute; left: 12px; right: 12px; bottom: 74px; height: 8px; background: rgba(255,255,255,.15); border-radius: 4px; overflow: hidden; }
+  #nitroBar { height: 100%; width: 100%; background: var(--accent); transition: background .15s; }
+  #nitroBar.low { background: var(--danger); }
+
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; text-align: center; padding: 24px; background: rgba(8, 14, 20, .78); border-radius: 6px;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h1 { margin: 0; font-size: clamp(34px, 8vh, 54px); letter-spacing: .02em; font-family: Impact, "Arial Black", sans-serif; font-weight: 400; }
+  #overlay p { margin: 0; line-height: 1.6; opacity: .85; font-size: clamp(13px, 2.4vh, 16px); }
+  button {
+    font: inherit; font-weight: 700; color: #1a1a1a; background: var(--car); border: 0;
+    padding: 12px 34px; border-radius: 999px; cursor: pointer; font-size: 18px;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+  #pad { position: absolute; left: 12px; right: 12px; bottom: 10px; display: flex; gap: 10px; }
+  #pad div {
+    flex: 1; height: 54px; border-radius: 12px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
+    display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700;
+  }
+  #pad div.on { background: rgba(255,255,255,.28); }
+  @media (hover: hover) and (pointer: fine) { #pad { display: none; } #nitro { bottom: 14px; } }
+  @media (prefers-reduced-motion: reduce) { #nitroBar { transition: none; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="400" height="640" aria-label="자동차 레이싱 게임 화면"></canvas>
+
+  <div id="hud">
+    <div>점수 <span id="score">0</span><small>최고 <span id="best">0</span></small></div>
+    <div style="text-align:right"><span id="kmh">0</span> km/h<small>레벨 <span id="level">1</span></small></div>
+  </div>
+  <div id="nitro"><div id="nitroBar"></div></div>
+
+  <div id="pad">
+    <div id="bL">◀</div>
+    <div id="bN">부스터</div>
+    <div id="bR">▶</div>
+  </div>
+
+  <div id="overlay">
+    <h1 id="title">NIGHT RUN</h1>
+    <p id="msg">다가오는 차를 피해 최대한 멀리 달리세요.<br>← → 이동 · Space 부스터 · P 일시정지</p>
+    <button id="startBtn">시작하기</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- 설정 ----------
+  const W = 400, H = 640;
+  const ROAD_X = 40, ROAD_W = 320, LANES = 4, LANE_W = ROAD_W / LANES;
+  const BASE_SPEED = 280, MAX_SPEED = 640, NITRO_BONUS = 240;
+  const ENEMY_COLORS = ['#4aa3ff', '#ff6fa8', '#e9ecef', '#8be28b', '#b78cff'];
+
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const el = { score: $('score'), best: $('best'), kmh: $('kmh'), level: $('level'),
+               bar: $('nitroBar'), overlay: $('overlay'), title: $('title'), msg: $('msg'), btn: $('startBtn') };
+
+  let best = 0;
+  try { best = +localStorage.getItem('nightrun-best') || 0; } catch (e) {}
+  el.best.textContent = best;
+
+  // ---------- 상태 ----------
+  let state = 'ready';            // ready | play | pause | over
+  let player, enemies, sparks, speed, score, dist, nextGap, nitro, shake, roadY, last = 0;
+  const keys = { left: false, right: false, boost: false };
+
+  function reset() {
+    player = { x: W / 2, y: H - 130, w: 40, h: 72, vx: 0 };
+    enemies = []; sparks = [];
+    speed = BASE_SPEED; score = 0; dist = 0; nextGap = 260; nitro = 100; shake = 0; roadY = 0;
+  }
+  reset();
+
+  // ---------- 입력 ----------
+  const keyMap = { ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right', ' ': 'boost', Shift: 'boost' };
+  addEventListener('keydown', e => {
+    if (keyMap[e.key]) { keys[keyMap[e.key]] = true; e.preventDefault(); }
+    if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') togglePause();
+    if ((e.key === 'Enter') && state !== 'play' && state !== 'pause') start();
+  });
+  addEventListener('keyup', e => { if (keyMap[e.key]) keys[keyMap[e.key]] = false; });
+  addEventListener('blur', () => { if (state === 'play') togglePause(); });
+
+  function hold(id, key) {
+    const b = $(id);
+    const on = e => { e.preventDefault(); keys[key] = true; b.classList.add('on'); };
+    const off = e => { e.preventDefault(); keys[key] = false; b.classList.remove('on'); };
+    b.addEventListener('pointerdown', on);
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(t => b.addEventListener(t, off));
+  }
+  hold('bL', 'left'); hold('bR', 'right'); hold('bN', 'boost');
+  el.btn.addEventListener('click', start);
+
+  function start() {
+    reset(); state = 'play'; el.overlay.classList.add('hidden'); last = performance.now();
+  }
+  function togglePause() {
+    if (state === 'play') {
+      state = 'pause'; el.title.textContent = '일시정지';
+      el.msg.textContent = 'P 키를 누르거나 버튼으로 계속하세요.'; el.btn.textContent = '계속하기';
+      el.btn.onclick = () => { state = 'play'; el.overlay.classList.add('hidden'); last = performance.now(); el.btn.onclick = null; };
+      el.overlay.classList.remove('hidden');
+    } else if (state === 'pause') {
+      state = 'play'; el.overlay.classList.add('hidden'); last = performance.now();
+    }
+  }
+  function gameOver() {
+    state = 'over'; shake = 18;
+    for (let i = 0; i < 30; i++) sparks.push({ x: player.x, y: player.y, vx: (Math.random() - .5) * 400, vy: (Math.random() - .5) * 400, life: .6 + Math.random() * .5, c: Math.random() < .5 ? '#ffd23f' : '#ff7a3d' });
+    const isBest = Math.floor(score) > best;
+    if (isBest) { best = Math.floor(score); try { localStorage.setItem('nightrun-best', best); } catch (e) {} el.best.textContent = best; }
+    setTimeout(() => {
+      el.title.textContent = '충돌!';
+      el.msg.innerHTML = `점수 <b>${Math.floor(score)}</b>${isBest ? ' — 신기록!' : ''}<br>최고 기록 ${best}`;
+      el.btn.textContent = '다시 도전'; el.btn.onclick = null;
+      el.overlay.classList.remove('hidden');
+    }, 900);
+  }
+
+  // ---------- 적 차량 ----------
+  function spawn() {
+    const lanes = [0, 1, 2, 3].sort(() => Math.random() - .5);
+    const count = Math.random() < Math.min(.15 + score / 4000, .5) ? 2 : 1; // 최대 2대 → 항상 빠져나갈 길이 있음
+    for (let i = 0; i < count; i++) {
+      enemies.push({
+        x: ROAD_X + lanes[i] * LANE_W + LANE_W / 2, y: -90, w: 40, h: 72,
+        v: BASE_SPEED * (.35 + Math.random() * .35),
+        c: ENEMY_COLORS[(Math.random() * ENEMY_COLORS.length) | 0]
+      });
+    }
+  }
+
+  // ---------- 업데이트 ----------
+  function update(dt) {
+    const level = 1 + Math.floor(score / 500);
+    const target = Math.min(BASE_SPEED + (level - 1) * 40, MAX_SPEED - NITRO_BONUS);
+    const boosting = keys.boost && nitro > 0;
+    nitro = boosting ? Math.max(0, nitro - 35 * dt) : Math.min(100, nitro + 12 * dt);
+    const goal = target + (boosting ? NITRO_BONUS : 0);
+    speed += (goal - speed) * Math.min(1, dt * 3);
+
+    // 조향
+    const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    player.vx += (dir * 360 - player.vx) * Math.min(1, dt * 9);
+    player.x += player.vx * dt;
+    const minX = ROAD_X + player.w / 2 + 2, maxX = ROAD_X + ROAD_W - player.w / 2 - 2;
+    if (player.x < minX) { player.x = minX; player.vx = 0; }
+    if (player.x > maxX) { player.x = maxX; player.vx = 0; }
+
+    roadY = (roadY + speed * dt) % 80;
+    dist += speed * dt;
+    score += speed * dt / 12;
+
+    // 생성
+    nextGap -= speed * dt;
+    if (nextGap <= 0) { spawn(); nextGap = Math.max(170, 380 - level * 25) + Math.random() * 120; }
+
+    // 이동 & 충돌
+    for (const e of enemies) {
+      e.y += (speed - e.v) * dt;
+      if (Math.abs(e.x - player.x) < (e.w + player.w) / 2 - 6 && Math.abs(e.y - player.y) < (e.h + player.h) / 2 - 8) { gameOver(); return; }
+    }
+    enemies = enemies.filter(e => e.y < H + 100);
+
+    // 부스터 불꽃
+    if (boosting) sparks.push({ x: player.x + (Math.random() - .5) * 16, y: player.y + player.h / 2, vx: (Math.random() - .5) * 40, vy: 160 + Math.random() * 120, life: .25, c: '#3fd0c9' });
+
+    el.score.textContent = Math.floor(score);
+    el.kmh.textContent = Math.round(speed / 3);
+    el.level.textContent = level;
+    el.bar.style.width = nitro + '%';
+    el.bar.classList.toggle('low', nitro < 20);
+  }
+
+  // ---------- 그리기 ----------
+  function drawCar(x, y, w, h, color, isPlayer) {
+    ctx.save(); ctx.translate(x, y);
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(-w / 2 + 3, -h / 2 + 5, w, h);       // 그림자
+    ctx.fillStyle = '#111';                                                                // 바퀴
+    ctx.fillRect(-w / 2 - 3, -h / 2 + 10, 6, 16); ctx.fillRect(w / 2 - 3, -h / 2 + 10, 6, 16);
+    ctx.fillRect(-w / 2 - 3, h / 2 - 26, 6, 16); ctx.fillRect(w / 2 - 3, h / 2 - 26, 6, 16);
+    ctx.fillStyle = color; ctx.beginPath(); ctx.roundRect(-w / 2, -h / 2, w, h, 9); ctx.fill(); // 차체
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.beginPath(); ctx.roundRect(-w / 2 + 6, -h / 2 + 18, w - 12, 18, 4); ctx.fill(); // 앞유리
+    ctx.beginPath(); ctx.roundRect(-w / 2 + 7, h / 2 - 22, w - 14, 10, 3); ctx.fill();    // 뒷유리
+    if (isPlayer) {                                                                        // 위쪽(전방) 라이트 + 줄무늬
+      ctx.fillStyle = '#fff6c8'; ctx.fillRect(-w / 2 + 4, -h / 2 + 2, 8, 5); ctx.fillRect(w / 2 - 12, -h / 2 + 2, 8, 5);
+      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(-3, -h / 2 + 4, 6, h - 8);
+    } else {                                                                               // 적 차량은 아래쪽이 앞(마주 오는 느낌 대신 같은 방향): 후미등
+      ctx.fillStyle = '#ff3b3b'; ctx.fillRect(-w / 2 + 4, h / 2 - 6, 8, 4); ctx.fillRect(w / 2 - 12, h / 2 - 6, 8, 4);
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    ctx.save();
+    if (shake > 0) { ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake); }
+    ctx.fillStyle = '#15363b'; ctx.fillRect(-20, -20, W + 40, H + 40);
+
+    // 길가 줄무늬(속도감)
+    for (let y = -80 + roadY; y < H; y += 80) {
+      ctx.fillStyle = Math.round((y - roadY) / 80) % 2 ? '#c9473d' : '#e8e2d0';
+      ctx.fillRect(ROAD_X - 8, y, 8, 40); ctx.fillRect(ROAD_X + ROAD_W, y, 8, 40);
+    }
+    // 도로
+    ctx.fillStyle = '#2a2e39'; ctx.fillRect(ROAD_X, 0, ROAD_W, H);
+    ctx.fillStyle = 'rgba(241,232,207,.8)';
+    for (let i = 1; i < LANES; i++)
+      for (let y = -80 + roadY; y < H; y += 80) ctx.fillRect(ROAD_X + i * LANE_W - 2, y, 4, 40);
+
+    for (const e of enemies) drawCar(e.x, e.y, e.w, e.h, e.c, false);
+    if (state !== 'over') drawCar(player.x, player.y, player.w, player.h, '#ffd23f', true);
+
+    // 파티클
+    const dt = 1 / 60;
+    for (const p of sparks) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; ctx.globalAlpha = Math.max(0, p.life * 2); ctx.fillStyle = p.c; ctx.fillRect(p.x, p.y, 4, 4); }
+    ctx.globalAlpha = 1; sparks = sparks.filter(p => p.life > 0);
+
+    // 부스터 시 비네팅
+    if (keys.boost && nitro > 0 && state === 'play') {
+      const g = ctx.createLinearGradient(0, 0, W, 0);
+      g.addColorStop(0, 'rgba(63,208,201,.25)'); g.addColorStop(.18, 'rgba(63,208,201,0)');
+      g.addColorStop(.82, 'rgba(63,208,201,0)'); g.addColorStop(1, 'rgba(63,208,201,.25)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    }
+    ctx.restore();
+    if (shake > 0) shake = Math.max(0, shake - .6);
+  }
+
+  // ---------- 메인 루프 ----------
+  function loop(t) {
+    const dt = Math.min(.05, (t - last) / 1000 || 0); last = t;
+    if (state === 'play') update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
